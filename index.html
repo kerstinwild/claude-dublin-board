@@ -1,0 +1,689 @@
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<title>generative board · claude × supabase</title>
+
+<!-- QR generator (UMD, exposes global `qrcode`) -->
+<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js"></script>
+
+<style>
+  :root{
+    --black:#141413; --ivory:#FAF9F5; --clay:#D97757; --heather:#CBCADB;
+    --plum:#827DBD; --cactus:#BCD1CA; --mineral:#629987; --peach:#EBC9B7; --gray:#DEDCD1;
+  }
+  *{ box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body{ margin:0; height:100%; overflow:hidden; background:var(--black); }
+  body{ font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace; color:var(--ivory); }
+  #art{ display:block; position:fixed; inset:0; width:100%; height:100%; }
+
+  .pill{
+    background:var(--black); color:var(--ivory);
+    font:600 12px/1 ui-monospace,Menlo,monospace; letter-spacing:.06em;
+    padding:8px 12px; border-radius:999px; white-space:nowrap;
+    display:inline-flex; align-items:center; gap:8px; border:1px solid rgba(250,249,245,.14);
+  }
+  .dot{ width:7px; height:7px; border-radius:2px; background:var(--mineral); }
+
+  /* bottom controls */
+  #ui{ position:fixed; left:0; right:0; bottom:0;
+       padding:16px calc(env(safe-area-inset-right) + 14px) calc(env(safe-area-inset-bottom) + 16px) calc(env(safe-area-inset-left) + 14px);
+       display:flex; gap:10px; align-items:center; justify-content:center; pointer-events:none; z-index:5; }
+  #ui > *{ pointer-events:auto; }
+  button{
+    font:600 13px/1 ui-monospace,Menlo,monospace; letter-spacing:.04em;
+    border:1px solid rgba(250,249,245,.16); border-radius:999px; padding:14px 20px; cursor:pointer;
+    color:var(--ivory); background:var(--black); transition:transform .12s ease, opacity .2s ease;
+  }
+  button:active{ transform:scale(.96); }
+  #joinBtn .dot{ background:var(--clay); }
+  .ghost{ background:rgba(20,20,19,.72); }
+  .ghost:disabled{ opacity:.35; cursor:default; }
+
+  #status{ position:fixed; top:calc(env(safe-area-inset-top) + 14px); left:14px; z-index:5; pointer-events:none; }
+
+  /* fixed QR area, flush to the top-right window corner: #6C6C6C box, white QR */
+  #host{ position:fixed; top:0; right:0; z-index:6; }
+  #qrWrap{ background:#6C6C6C; padding:12px; }
+  #qr{ display:block; image-rendering:pixelated;
+       width:clamp(80px, 12vmin, 120px); height:clamp(80px, 12vmin, 120px); }
+
+  /* sticky bottom bar flush to the window bottom: gray frame, sharp corners */
+  #dock{ position:fixed; z-index:7; display:flex; align-items:stretch; gap:6px;
+         left:50%; bottom:0; transform:translateX(-50%);
+         background:#7C7C7A; padding:8px; }
+  #dock button{ height:32px; padding:0 20px; border-radius:0; border:none; cursor:pointer;
+    font:700 10px/1 ui-monospace,Menlo,monospace; letter-spacing:.16em; text-transform:uppercase;
+    display:inline-flex; align-items:center; justify-content:center; transition:transform .1s ease; }
+  #dock button:active{ transform:scale(.97); }
+  #addBtn{ background:var(--black); color:var(--ivory); }
+  #dlBtn{ background:var(--ivory); color:var(--black); width:32px; height:32px; padding:0; }
+  #dlBtn img{ display:block; width:16px; height:16px; }
+
+  /* name-entry modal */
+  #modal{ position:fixed; inset:0; z-index:9; display:none; align-items:center; justify-content:center;
+          background:rgba(20,20,19,.72); backdrop-filter:blur(3px); }
+  #modal.on{ display:flex; }
+  #card{ width:min(340px,86vw); background:var(--black); border:1px solid rgba(250,249,245,.18);
+         border-radius:16px; padding:22px; display:flex; flex-direction:column; gap:14px; }
+  #card h2{ margin:0; font:700 15px/1.2 ui-monospace,Menlo,monospace; letter-spacing:.04em; color:var(--ivory); }
+  #card p{ margin:0; font:500 12px/1.5 ui-monospace,Menlo,monospace; color:var(--gray); letter-spacing:.02em; }
+  .nameRow{ display:flex; align-items:center; gap:0; border:1px solid rgba(250,249,245,.22); border-radius:10px; overflow:hidden; }
+  .prefix{ padding:12px 4px 12px 12px; color:var(--clay); font:700 15px/1 ui-monospace,Menlo,monospace; }
+  #nameInput{ flex:1; border:none; outline:none; background:transparent; color:var(--ivory);
+              font:700 15px/1 ui-monospace,Menlo,monospace; letter-spacing:.06em; padding:12px 12px 12px 2px; text-transform:uppercase; }
+  .modalBtns{ display:flex; flex-direction:column; gap:8px; }
+  .modalBtns button{ width:100%; }
+  #goBtn{ background:var(--clay); border-color:transparent; color:var(--black); }
+</style>
+
+<canvas id="art"></canvas>
+
+<div id="host">
+  <div id="qrWrap"><canvas id="qr" width="200" height="200"></canvas></div>
+</div>
+
+<div id="dock">
+  <button id="addBtn">add photo</button>
+  <button id="dlBtn" title="download board"><img src="Assets/Icon-Download.svg" alt="download" /></button>
+</div>
+
+<div id="modal">
+  <div id="card">
+    <h2>join the board</h2>
+    <p>enter a name for your block tag. leave blank for a random id.</p>
+    <div class="nameRow"><span class="prefix">P0_</span><input id="nameInput" maxlength="12" placeholder="NAME" autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false" data-1p-ignore data-lpignore="true" /></div>
+    <div class="modalBtns">
+      <button id="goBtn">enter · start camera</button>
+      <button id="uploadBtn" class="ghost">or upload a photo</button>
+    </div>
+  </div>
+</div>
+<input id="fileInput" type="file" accept="image/*" style="display:none" />
+
+<script type="module">
+import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
+
+/* ============================================================================
+   CONFIG — fill these to enable the live multiplayer layer.
+   Leave blank to run the board + local camera in offline/solo mode.
+   ========================================================================== */
+const SUPABASE_URL = "";      // e.g. "https://xxxx.supabase.co"
+const SUPABASE_ANON_KEY = ""; // e.g. "eyJhbGci..."
+const ROOM = "meetup-board";
+
+/* ============================================================================
+   PALETTE  (all generated graphics use these EXCLUSIVELY; photos are exempt)
+   ========================================================================== */
+const C = {
+  black:"#141413", ivory:"#FAF9F5", clay:"#D97757", heather:"#CBCADB",
+  plum:"#827DBD", cactus:"#BCD1CA", mineral:"#629987", peach:"#EBC9B7", gray:"#DEDCD1",
+};
+// each block is dealt one "ink" on join
+const INKS = [C.clay, C.mineral, C.plum, C.cactus, C.heather, C.peach];
+// the three allowed ramps (white only as a stop)
+const RAMPS = [
+  ["#FFFFFF", C.peach, C.clay, "#FF8800"],
+  ["#FFFFFF", C.mineral, C.cactus],
+  ["#FFFFFF", C.heather, C.plum],
+];
+const GHOST_NAMES = ["EMMA","LEO","MAYA","JON","ARI","KAI","NOA","ZOE","IVY","REN","MILO","EVA","SAM","NIA","OJI","LUX"];
+
+/* ============================================================================
+   utils
+   ========================================================================== */
+const clamp = (v,a,b)=>Math.max(a,Math.min(b,v));
+const lerp  = (a,b,t)=>a+(b-a)*t;
+const ease  = (a,b,t)=>a+(b-a)*t;
+function mulberry32(seed){ let a=seed>>>0; return ()=>{ a|=0; a=a+0x6D2B79F5|0; let t=Math.imul(a^a>>>15,1|a); t=t+Math.imul(t^t>>>7,61|t)^t; return ((t^t>>>14)>>>0)/4294967296; }; }
+function hashStr(s){ let h=2166136261>>>0; for(let i=0;i<s.length;i++){ h^=s.charCodeAt(i); h=Math.imul(h,16777619); } return h>>>0; }
+
+/* ============================================================================
+   canvas
+   ========================================================================== */
+const cv = document.getElementById("art");
+const ctx = cv.getContext("2d");
+let W=0, H=0, DPR=1;
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 2);
+  W = window.innerWidth || document.documentElement.clientWidth || 1280;
+  H = window.innerHeight || document.documentElement.clientHeight || 720;
+  cv.width = Math.round(W*DPR); cv.height = Math.round(H*DPR);
+  cv.style.width=W+"px"; cv.style.height=H+"px";
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  Board.relayout();
+}
+window.addEventListener("resize", resize);
+
+/* ============================================================================
+   BOARD — a coupled system of floating snapshot blocks on black.
+   Each block springs toward a drifting "home", breathes in anti-phase with its
+   neighbours (total area roughly conserved), and softly shoves overlapping
+   neighbours so pushes ripple through the field. Blocks may overlap; the
+   overlap is painted in the palette (see draw()).
+   ========================================================================== */
+const Board = (()=>{
+  const blocks = new Map(); // id -> block
+  const ASPECTS = [4/3, 1/1, 3/4, 3/2, 1/1];
+
+  // physics constants
+  const K_HOME = 0.010;   // spring toward home
+  const K_PUSH = 0.045;   // soft repulsion per px of penetration
+  const DAMP   = 0.90;    // velocity damping
+  const BREATH_AMP = 0.07;
+  const BREATH_SPD = 0.00036; // rad/ms  (slowed 40%)
+  const DRIFT_SPD  = 0.000078; // rad/ms (slowed 40%)
+
+  function list(){ return [...blocks.values()]; }
+  function get(id){ return blocks.get(id); }
+  function has(id){ return blocks.has(id); }
+
+  function ensure(id, kind){
+    let b = blocks.get(id);
+    if(b) return b;
+    const h = hashStr(id);
+    b = {
+      id, kind, owner:id, name: "P0_"+id.slice(0,5).toUpperCase(),
+      ink: INKS[h % INKS.length],
+      aspect: ASPECTS[(h>>>3) % ASPECTS.length],
+      sizeMul: 0.80 + (h%1000)/1000*0.62,   // some blocks big, some small
+
+      img:null, imgAlpha:0, facing:"user",
+      cx:W/2 + (Math.cos(h)*W*0.18), cy:H/2 + (Math.sin(h)*H*0.18),
+      vx:0, vy:0, w:120, h:100, wCur:2, hCur:2,   // grow-in from ~0
+      home:{x:W/2,y:H/2}, phase:0,
+      dpx:(h%1000)/1000*6.28, dpy:((h>>>5)%1000)/1000*6.28,
+    };
+    blocks.set(id, b);
+    relayout();
+    return b;
+  }
+  function remove(id){ if(blocks.delete(id)) relayout(); }
+  function setImage(id, img, facing){
+    const b=blocks.get(id); if(!b) return;
+    b.img=img; if(facing) b.facing=facing;
+    // adopt the image's real aspect ratio (once) so the area matches, no crop
+    const a=(img.width&&img.height)?img.width/img.height:null;
+    if(a && Math.abs((b.aspect||1)-a)>0.03){ b.aspect=a; relayout(); }
+  }
+  function setName(id, name){ const b=blocks.get(id); if(b && name) b.name="P0_"+name; }
+  function setOwner(id, owner){ const b=blocks.get(id); if(b && owner) b.owner=owner; }
+
+  // recompute home slots + target sizes for the current population
+  function relayout(){
+    const bs = list(); const N = bs.length;
+    if(N===0) return;
+    const A = Math.max(0.4, W/H);
+    const cols = Math.max(1, Math.round(Math.sqrt(N*A)));
+    const rows = Math.max(1, Math.ceil(N/cols));
+    const margin = Math.min(W,H)*0.055;
+    const cellW = (W-2*margin)/cols, cellH=(H-2*margin)/rows;
+    // block base side scales down as people join; blocks stay smaller than a
+    // cell so the field keeps its negative space (but big blocks overlap).
+    const base = Math.min(cellW,cellH) * 0.80;
+
+    // build slot list (jittered grid), then greedily match blocks to nearest slot
+    const slots=[];
+    for(let r=0;r<rows;r++) for(let c=0;c<cols;c++){
+      if(slots.length>=N) break;
+      const jseed=(r*73856093 ^ c*19349663)>>>0, jr=mulberry32(jseed);
+      slots.push({
+        x: margin + cellW*(c+0.5) + (jr()-0.5)*cellW*0.40,
+        y: margin + cellH*(r+0.5) + (jr()-0.5)*cellH*0.40,
+        par:(c+r)&1,
+      });
+    }
+    if(slots.length<N) console.warn("slot shortfall", {N, cols, rows, slots:slots.length, W, H});
+    const free = slots.map((_,i)=>i);
+    // assign blocks (by current position) to nearest free slot for continuity
+    const ordered = bs.slice().sort((a,b)=> (a.cx-b.cx)||(a.cy-b.cy)||0);
+    for(const b of ordered){
+      let bi=0, bd=1e18;
+      for(let k=0;k<free.length;k++){
+        const s=slots[free[k]]; const d=(s.x-b.cx)**2+(s.y-b.cy)**2;
+        if(d<bd){ bd=d; bi=k; }
+      }
+      const idx = free.length ? free.splice(bi,1)[0] : null;
+      const s = idx!=null ? slots[idx] : {x:margin+Math.random()*(W-2*margin), y:margin+Math.random()*(H-2*margin), par:0};
+      b.home = {x:s.x, y:s.y};
+      b.phase = s.par*Math.PI + (hashStr(b.id)%628)/100; // anti-phase by slot parity
+      const area = base*base*b.sizeMul;
+      b.w = Math.sqrt(area*b.aspect);
+      b.h = Math.sqrt(area/b.aspect);
+      const mn=Math.min(b.w,b.h); if(!b.deco && mn<180){ const s=180/mn; b.w*=s; b.h*=s; } // image areas min 180px
+    }
+    updateStatus();
+  }
+
+  let last=0;
+  function step(now){
+    if(!last) last=now;
+    const dt = clamp((now-last)/16.67, 0.2, 2.5) * 0.6; last=now; // ~frames, slowed 40%
+    const bs = list();
+    // forces
+    for(const b of bs){ b.fx=0; b.fy=0; }
+    // home springs (homes drift on slow Lissajous orbits)
+    for(const b of bs){
+      const amp = Math.min(b.w,b.h)*0.22;
+      const hx = b.home.x + Math.sin(now*DRIFT_SPD + b.dpx)*amp;
+      const hy = b.home.y + Math.cos(now*DRIFT_SPD*0.83 + b.dpy)*amp;
+      b.fx += (hx-b.cx)*K_HOME; b.fy += (hy-b.cy)*K_HOME;
+    }
+    // soft pairwise repulsion on overlap (shoves ripple through the system)
+    for(let i=0;i<bs.length;i++) for(let j=i+1;j<bs.length;j++){
+      const a=bs[i], b=bs[j];
+      const ox = (a.wCur+b.wCur)/2 - Math.abs(a.cx-b.cx);
+      const oy = (a.hCur+b.hCur)/2 - Math.abs(a.cy-b.cy);
+      if(ox>0 && oy>0){
+        const pen = Math.min(ox,oy);
+        let dx=b.cx-a.cx, dy=b.cy-a.cy; const d=Math.hypot(dx,dy)||1;
+        dx/=d; dy/=d;
+        const f = pen*K_PUSH;
+        a.fx-=dx*f; a.fy-=dy*f; b.fx+=dx*f; b.fy+=dy*f;
+      }
+    }
+    // integrate + breathe + clamp to field
+    for(const b of bs){
+      b.vx=(b.vx + b.fx*dt)*DAMP; b.vy=(b.vy + b.fy*dt)*DAMP;
+      b.cx += b.vx*dt; b.cy += b.vy*dt;
+      const s = 1 + BREATH_AMP*Math.sin(now*BREATH_SPD + b.phase);
+      b.wCur = ease(b.wCur, b.w*s, 0.10);
+      b.hCur = ease(b.hCur, b.h*s, 0.10);
+      const hw=b.wCur/2, hh=b.hCur/2, m=4;
+      b.cx = clamp(b.cx, hw+m, W-hw-m);
+      b.cy = clamp(b.cy, hh+m, H-hh-m);
+      b.imgAlpha = ease(b.imgAlpha, b.img?1:0, 0.05);
+    }
+  }
+
+  const rectOf = b => ({ x:b.cx-b.wCur/2, y:b.cy-b.hCur/2, w:b.wCur, h:b.hCur, r:b.cx+b.wCur/2, bt:b.cy+b.hCur/2 });
+  const rectOfId = id => { const b=blocks.get(id); return b?rectOf(b):null; };
+
+  return { ensure, remove, setImage, setName, setOwner, get, has, list, relayout, step, rectOf, rectOfId };
+})();
+
+/* ============================================================================
+   DRAW
+   ========================================================================== */
+function drawCover(img, x,y,w,h, mirror){
+  const iw=img.width||img.videoWidth, ih=img.height||img.videoHeight;
+  if(!iw||!ih) return;
+  const s=Math.max(w/iw,h/ih), dw=iw*s, dh=ih*s;
+  ctx.save(); ctx.beginPath(); ctx.rect(x,y,w,h); ctx.clip();
+  if(mirror){ ctx.translate(x+w,y); ctx.scale(-1,1); ctx.drawImage(img,(w-dw)/2,(h-dh)/2,dw,dh); }
+  else ctx.drawImage(img, x+(w-dw)/2, y+(h-dh)/2, dw, dh);
+  ctx.restore();
+}
+function intersect(a,b){
+  const x=Math.max(a.x,b.x), y=Math.max(a.y,b.y);
+  const r=Math.min(a.r,b.r), bt=Math.min(a.bt,b.bt);
+  if(r<=x||bt<=y) return null;
+  return { x, y, r, bt, w:r-x, h:bt-y };
+}
+
+// numeric hash for stable per-cell texture decisions (no per-frame string alloc)
+function ihash(a,b,c){ let h=(a*73856093 ^ b*19349663 ^ c*83492791)>>>0; h^=h>>>13; return (Math.imul(h,1274126177)>>>0); }
+function uniqSorted(arr){ const s=arr.slice().sort((a,b)=>a-b), out=[]; for(const v of s){ if(!out.length || v-out[out.length-1]>1.5) out.push(v); } return out; }
+
+// Each block's four edges become dashed guide lines spanning the whole field —
+// a visible grid that grows as people join. ~10% of guides ride ABOVE the
+// images (front layer); the other ~90% sit behind them.
+function computeGuides(bs, rects){
+  const vert=[], horz=[];
+  for(let i=0;i<bs.length;i++){
+    const b=bs[i];
+    const isPattern = b.fill==="lines" || b.fill==="dots";
+    // pattern areas ALWAYS keep their bounding lines (so the pattern is masked by
+    // a rectangle built from the guides); only other canvases get culled to ~80%.
+    if(!isPattern && hashStr(b.id+"g")%100 >= 80) continue;
+    const R=rects[i], id=b.id;
+    vert.push({x:R.x,  id:id+"L", front:hashStr(id+"L")%10===0});
+    vert.push({x:R.r,  id:id+"R", front:hashStr(id+"R")%10===0});
+    horz.push({y:R.y,  id:id+"T", front:hashStr(id+"T")%10===0});
+    horz.push({y:R.bt, id:id+"B", front:hashStr(id+"B")%10===0});
+  }
+  return {vert, horz};
+}
+// a persistent base grid of slowly DRIFTING dashed lines — always visible,
+// even on the empty default board, so the field always feels alive.
+const BASE_V=[0.16,0.38,0.60,0.82], BASE_H=[0.24,0.50,0.76];
+function baseGuides(now, dense){
+  const t=now*0.00006, vert=[], horz=[];
+  // when few elements are present, keep only every other base line (~50% fewer)
+  BASE_V.forEach((f,i)=>{ if(!dense && (i%2)) return; vert.push({ x:(f + 0.028*Math.sin(t*1.0 + i*1.7))*W, id:"bv"+i, front:false }); });
+  BASE_H.forEach((f,i)=>{ if(!dense && (i%2)) return; horz.push({ y:(f + 0.028*Math.cos(t*0.9 + i*2.1))*H, id:"bh"+i, front:false }); });
+  return {vert, horz};
+}
+function drawGuides(g, layer){
+  const isFront = layer==="front";
+  ctx.save();
+  ctx.setLineDash([1,2]); ctx.lineWidth=1;                 // dash 1 / gap 2
+  ctx.strokeStyle = isFront ? "rgba(250,249,245,0.34)" : "rgba(222,220,209,0.18)";
+  ctx.beginPath();
+  for(const v of g.vert){ if(v.front===isFront){ const x=Math.round(v.x)+0.5; ctx.moveTo(x,0); ctx.lineTo(x,H); } }
+  for(const h of g.horz){ if(h.front===isFront){ const y=Math.round(h.y)+0.5; ctx.moveTo(0,y); ctx.lineTo(W,y); } }
+  ctx.stroke(); ctx.setLineDash([]); ctx.restore();
+}
+// STATIC diagonal-hatch / dot-grid pattern, anchored to the SCREEN (never moves).
+// Blocks are drawn on top and simply mask the pattern that lives behind them.
+// Two continuous, screen-fixed patterns. Areas clip (mask) them into view, so
+// the lines/dots stay aligned across every area that reveals them.
+function drawLinePattern(){
+  ctx.strokeStyle="rgba(222,220,209,0.12)"; ctx.lineWidth=1; ctx.beginPath();
+  const step=9;
+  for(let d=0; d<W+H; d+=step){ ctx.moveTo(d,0); ctx.lineTo(d-H,H); }  // "/" diagonals
+  ctx.stroke();
+}
+function drawDotPattern(){
+  ctx.fillStyle="rgba(222,220,209,0.18)"; const step=12;
+  for(let y=step/2;y<H;y+=step) for(let x=step/2;x<W;x+=step) ctx.fillRect(x,y,1.6,1.6);
+}
+
+function draw(now){
+  try{ drawFrame(now); }catch(err){ console.error("draw error:", err); }
+  requestAnimationFrame(draw);
+}
+function drawFrame(now){
+  Board.step(now);
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle=C.black; ctx.fillRect(0,0,W,H);
+
+  const bs = Board.list();
+  const rects = bs.map(Board.rectOf);
+  const liveCount = bs.filter(b=>!b.deco && !b.brand).length;
+  const edges = computeGuides(bs, rects);
+  const base  = baseGuides(now, liveCount>=4);   // thin the base grid when few elements
+  const guides = { vert:[...base.vert, ...edges.vert], horz:[...base.horz, ...edges.horz] };
+  // dashed guides along the QR box's left and bottom edges
+  const qrEl=document.getElementById("qrWrap");
+  if(qrEl){ const r=qrEl.getBoundingClientRect(); guides.vert.push({x:r.left,id:"qrL",front:false}); guides.horz.push({y:r.bottom,id:"qrB",front:false}); }
+
+  // ---- dashed guide grid (behind the areas) ----
+  drawGuides(guides, "back");
+
+  // ---- Each AREA is one of: line-pattern, dot-pattern, plain, or image.
+  //      Line/dot areas mask a continuous full-screen pattern into view. ----
+  const lineRects=[], dotRects=[];
+  for(let i=0;i<bs.length;i++){
+    const b=bs[i], R=rects[i];
+    if(R.w<2||R.h<2) continue;
+    if(b.img && b.imgAlpha>0.01){
+      ctx.fillStyle=C.black; ctx.fillRect(R.x,R.y,R.w,R.h);
+      ctx.save(); ctx.globalAlpha=b.imgAlpha;
+      drawCover(b.img, R.x,R.y,R.w,R.h, b.facing==="user");
+      ctx.restore();
+    }else if(b.fill==="lines"){ lineRects.push(R); }
+    else if(b.fill==="dots"){ dotRects.push(R); }
+    // else: plain area (no fill)
+  }
+  if(lineRects.length){ ctx.save(); ctx.beginPath(); for(const R of lineRects) ctx.rect(R.x,R.y,R.w,R.h); ctx.clip(); drawLinePattern(); ctx.restore(); }
+  if(dotRects.length){ ctx.save(); ctx.beginPath(); for(const R of dotRects) ctx.rect(R.x,R.y,R.w,R.h); ctx.clip(); drawDotPattern(); ctx.restore(); }
+
+  // ---- overlaps: where two photo blocks cross, print the palette over both ----
+  for(let i=0;i<bs.length;i++) for(let j=i+1;j<bs.length;j++){
+    if(!(bs[i].img || bs[j].img)) continue;   // no colour fields until there's content
+    const o=intersect(rects[i],rects[j]); if(!o) continue;
+    const ha=hashStr(bs[i].id), hb=hashStr(bs[j].id);
+    if(((ha^hb)>>>0)%2===0){ // plain palette colour
+      ctx.fillStyle = INKS[(ha+hb)%INKS.length];
+      ctx.fillRect(o.x,o.y,o.w,o.h);
+    }else{ // gradient from one of the three allowed ramps
+      const ramp=RAMPS[((ha+hb)>>>0)%RAMPS.length];
+      const g=ctx.createLinearGradient(o.x,o.y,o.r,o.bt);
+      ramp.forEach((c,idx)=>g.addColorStop(idx/(ramp.length-1),c));
+      ctx.fillStyle=g; ctx.fillRect(o.x,o.y,o.w,o.h);
+    }
+  }
+
+  // ---- front layer: the few dashed guides that ride over the images ----
+  drawGuides(guides, "front");
+
+  drawChrome(now, bs, rects, guides);
+}
+
+const HANDLE = "#434342";
+function drawChrome(now, bs, rects, guides){
+  // (area edges come from the dashed guide grid itself — no extra brighter frame)
+
+  // ---- one thin solid connector between two blocks (stable partner, no snapping) ----
+  if(bs.length>=2){
+    ctx.strokeStyle="rgba(250,249,245,0.20)"; ctx.lineWidth=1;
+    for(let i=0;i<bs.length;i+=4){
+      const A=rects[i], B=rects[(i+1)%bs.length];
+      if(A===B) continue;
+      ctx.beginPath(); ctx.moveTo(A.r,A.bt); ctx.lineTo(B.x,B.y); ctx.stroke();
+    }
+  }
+
+  // ---- handles: filled #434342 squares on SOME crossings, keyed by STABLE guide
+  //      ids so they never reshuffle when drifting lines cross each other ----
+  const imgRects=[]; for(let i=0;i<bs.length;i++) if(bs[i].img) imgRects.push(rects[i]);
+  const overImage=(x,y)=>imgRects.some(R=> x>=R.x&&x<=R.r&&y>=R.y&&y<=R.bt);
+  const s=6;
+  for(const v of guides.vert) for(const h of guides.horz){
+    const k=hashStr(v.id+"|"+h.id)%100;
+    if(k>=19) continue;                        // handles on ~a fifth of crossings
+    const x=Math.round(v.x), y=Math.round(h.y);
+    if(overImage(x,y)) continue;               // never draw squares on top of images
+    ctx.fillStyle=HANDLE; ctx.fillRect(x-s/2, y-s/2, s, s);
+    if(k<3){                                    // coordinate readout beside a few
+      ctx.fillStyle="rgba(250,249,245,0.45)"; ctx.font="600 10px ui-monospace,Menlo,monospace"; ctx.textBaseline="top";
+      ctx.fillText(`${x}, ${y}`, x+8, y+5);
+    }
+  }
+
+  // ---- name tags (P0_NAME), inside the area top-left, frosted (not on empty areas) ----
+  for(let i=0;i<bs.length;i++) if(!bs[i].deco) drawTag(bs[i], rects[i]);
+}
+
+// Frosted tag anchored INSIDE the block's top-left corner (blurs what's behind it).
+function drawTag(b, R){
+  ctx.font="600 11px ui-monospace,Menlo,monospace";
+  const text=b.name, padX=8, h=18, tw=ctx.measureText(text).width;
+  const w = padX*2 + tw;
+  if(R.w < w+8 || R.h < h+8) return; // block too small for a tag
+  const m=6, px=Math.round(R.x+m), py=Math.round(R.y+m);
+  ctx.save();
+  ctx.beginPath(); ctx.rect(px,py,w,h); ctx.clip();
+  if(b.img && b.imgAlpha>0.01){                 // real background blur of the photo
+    ctx.filter="blur(7px)"; drawCover(b.img,R.x,R.y,R.w,R.h,b.facing==="user"); ctx.filter="none";
+  }
+  ctx.fillStyle="rgba(20,20,19,0.55)"; ctx.fillRect(px,py,w,h);   // frost, square corners
+  ctx.restore();
+  ctx.strokeStyle="rgba(250,249,245,0.26)"; ctx.lineWidth=1;
+  ctx.strokeRect(px+0.5,py+0.5,w-1,h-1);
+  ctx.fillStyle=C.ivory; ctx.textBaseline="middle"; ctx.fillText(text, px+padX, py+h/2+0.5);
+}
+
+/* ============================================================================
+   status + host view
+   ========================================================================== */
+const params = new URLSearchParams(location.search);
+const isHost = params.has("host");
+function updateStatus(){
+  const n=Board.list().filter(b=>!b.brand && !b.deco).length;   // brand + deco aren't participants
+  const hc=document.getElementById("hostCount"); if(hc) hc.textContent=`${n} live`;
+}
+// QR is a FIXED area, always shown top-right, that links to the join URL.
+function buildQR(){
+  const url=new URL(location.href); url.searchParams.delete("host");
+  const qr=qrcode(0,"M"); qr.addData(url.toString()); qr.make();
+  const n=qr.getModuleCount(), cvs=document.getElementById("qr"), c=cvs.getContext("2d");
+  const size=cvs.width, cell=Math.floor(size/(n+2)), off=Math.floor((size-cell*n)/2);
+  c.fillStyle="#6C6C6C"; c.fillRect(0,0,size,size); c.fillStyle=C.ivory;  // white modules on gray
+  for(let y=0;y<n;y++) for(let x=0;x<n;x++) if(qr.isDark(y,x)) c.fillRect(off+x*cell,off+y*cell,cell,cell);
+}
+
+/* ============================================================================
+   camera
+   ========================================================================== */
+const Camera = (()=>{
+  let stream=null, video=null, facing="user", timer=null, cap=null;
+  async function start(newFacing){
+    facing=newFacing||facing; stop();
+    stream=await navigator.mediaDevices.getUserMedia({
+      video:{ facingMode:{ ideal:facing }, width:{ideal:640}, height:{ideal:640} }, audio:false });
+    video=document.createElement("video"); video.setAttribute("playsinline",""); video.muted=true;
+    video.srcObject=stream; await video.play();
+    cap=cap||document.createElement("canvas"); cap.width=cap.height=220;
+    if(timer) clearInterval(timer); timer=setInterval(snapshot,1500); snapshot();
+    return facing;
+  }
+  function snapshot(){
+    if(!video||video.readyState<2) return;
+    const c=cap.getContext("2d"), iw=video.videoWidth, ih=video.videoHeight, side=Math.min(iw,ih);
+    c.drawImage(video,(iw-side)/2,(ih-side)/2,side,side,0,0,cap.width,cap.height);
+    const dataUrl=cap.toDataURL("image/jpeg",0.5);
+    const img=new Image(); img.onload=()=>Board.setImage(Net.myId,img,facing); img.src=dataUrl;
+    Net.setStill(dataUrl,facing);
+  }
+  function stop(){ if(timer){clearInterval(timer);timer=null;} if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;} }
+  async function flip(){ return start(facing==="user"?"environment":"user"); }
+  return { start, flip, stop, get facing(){return facing;} };
+})();
+
+/* ============================================================================
+   net — Supabase Realtime (presence + broadcast) with offline fallback
+   ========================================================================== */
+const Net = (()=>{
+  const myId="u"+Math.random().toString(36).slice(2,9);
+  let channel=null, online=false, joined=false, myName="";
+
+  function connect(){
+    if(!SUPABASE_URL||!SUPABASE_ANON_KEY){ online=false; return; }
+    const sb=createClient(SUPABASE_URL,SUPABASE_ANON_KEY,{ realtime:{ params:{ eventsPerSecond:10 }}});
+    channel=sb.channel(ROOM,{ config:{ presence:{ key:myId }, broadcast:{ self:false }}});
+    channel.on("presence",{event:"sync"},()=>{
+      const state=channel.presenceState(); const ids=new Set(Object.keys(state));
+      // drop remote blocks whose OWNER connection has left (a user may own many)
+      for(const b of Board.list()) if(b.kind==="remote" && b.owner && !ids.has(b.owner)) Board.remove(b.id);
+      updateStatus();
+    });
+    channel.on("broadcast",{event:"snap"},({payload})=>{
+      const {id,owner,jpeg,facing,name}=payload||{}; if(!id||owner===myId) return;
+      Board.ensure(id,"remote"); Board.setOwner(id, owner||id); if(name) Board.setName(id,name);
+      const img=new Image(); img.onload=()=>Board.setImage(id,img,facing); img.src=jpeg;
+    });
+    channel.subscribe(async(status)=>{
+      if(status==="SUBSCRIBED"){ online=true; updateStatus(); if(joined) await channel.track({id:myId,name:myName}); bcastAll(); }
+    });
+  }
+  const mine=new Map(); let reb=null; // id -> {jpeg,facing,name}
+  function bcastOne(id){
+    const m=mine.get(id); if(!(m&&online&&channel)) return;
+    channel.send({type:"broadcast",event:"snap",payload:{id, owner:myId, jpeg:m.jpeg, facing:m.facing, name:m.name}});
+  }
+  function bcastAll(){ for(const id of mine.keys()) bcastOne(id); }
+  async function join(name){
+    myName=name||""; if(!joined){ joined=true; document.body.classList.add("live");
+      if(online&&channel) await channel.track({id:myId,name:myName});
+      if(!reb) reb=setInterval(bcastAll, 2600); }        // re-broadcast for late joiners
+  }
+  // camera: refresh the single live camera block in place
+  function setStill(jpeg,facing){ const b=Board.get(myId); const name=b?b.name.replace(/^P0_/,""):myName;
+    mine.set(myId,{jpeg,facing,name}); bcastOne(myId); }
+  // upload: register a NEW owned block (its own id) — adds, never replaces
+  function addStill(id,jpeg,facing,name){ mine.set(id,{jpeg,facing,name}); bcastOne(id); }
+  return { myId, connect, join, setStill, addStill, get online(){return online;} };
+})();
+
+/* ============================================================================
+   wire up — join flow with name entry
+   ========================================================================== */
+const modal=document.getElementById("modal"), nameInput=document.getElementById("nameInput");
+const fileInput=document.getElementById("fileInput");
+function sanitizeName(v){ return (v||"").trim().toUpperCase().replace(/[^A-Z0-9]/g,"").slice(0,12); }
+function currentName(){ return sanitizeName(nameInput.value) || Math.random().toString(36).slice(2,6).toUpperCase(); }
+function liveUI(){ document.body.classList.add("live"); }
+
+document.getElementById("addBtn").addEventListener("click", ()=>{
+  modal.classList.add("on"); setTimeout(()=>nameInput.focus(),50);
+});
+// click on the backdrop (outside the card) or Escape closes the overlay
+modal.addEventListener("click", e=>{ if(e.target===modal) modal.classList.remove("on"); });
+window.addEventListener("keydown", e=>{ if(e.key==="Escape") modal.classList.remove("on"); });
+
+
+// --- start-camera path (one live block for this user, refreshed in place) ---
+async function startCamera(){
+  const name=currentName(); modal.classList.remove("on");
+  await Net.join(name);
+  Board.ensure(Net.myId,"me"); Board.setName(Net.myId,name); liveUI();
+  try{ await Camera.start("user"); }
+  catch(err){ console.warn(err); }
+}
+// --- upload-photo path (each upload ADDS a new block, never replaces) ---
+let pendingName="", uploadN=0;
+function fileToStill(file){
+  return new Promise((res,rej)=>{
+    const url=URL.createObjectURL(file), im=new Image();
+    im.onload=()=>{ const maxD=360; let w=im.width, h=im.height; const sc=Math.min(1, maxD/Math.max(w,h));
+      w=Math.max(1,Math.round(w*sc)); h=Math.max(1,Math.round(h*sc));           // keep original aspect
+      const cap=document.createElement("canvas"); cap.width=w; cap.height=h;
+      cap.getContext("2d").drawImage(im,0,0,w,h);
+      URL.revokeObjectURL(url); res(cap.toDataURL("image/jpeg",0.62)); };
+    im.onerror=rej; im.src=url;
+  });
+}
+async function startUpload(){ pendingName=currentName(); await Net.join(pendingName); liveUI(); fileInput.click(); }
+fileInput.addEventListener("change", async ()=>{
+  const f=fileInput.files&&fileInput.files[0]; fileInput.value=""; if(!f) return;
+  modal.classList.remove("on");
+  const id = Net.myId + "_u" + (++uploadN);          // a fresh block per upload
+  Board.ensure(id,"me"); Board.setOwner(id, Net.myId); Board.setName(id, pendingName);
+  const dataUrl=await fileToStill(f);
+  const img=new Image(); img.onload=()=>Board.setImage(id,img,"upload"); img.src=dataUrl;
+  Net.addStill(id, dataUrl, "upload", pendingName);
+});
+
+document.getElementById("goBtn").addEventListener("click", startCamera);
+document.getElementById("uploadBtn").addEventListener("click", startUpload);
+nameInput.addEventListener("keydown", e=>{ if(e.key==="Enter") startCamera(); });
+
+// download the current board as a PNG
+document.getElementById("dlBtn").addEventListener("click", ()=>{
+  const a=document.createElement("a");
+  a.download="claude-dubin_kerstinharrer.png"; a.href=cv.toDataURL("image/png"); a.click();
+});
+
+// demo helpers: A adds a placeholder block, X removes one
+window.addEventListener("keydown",(e)=>{
+  if(e.target && e.target.tagName==="INPUT") return;
+  if(e.key==="a"||e.key==="A"){ const id="ghost"+Math.random().toString(36).slice(2,7); Board.ensure(id,"ghost"); Board.setName(id, GHOST_NAMES[hashStr(id)%GHOST_NAMES.length]); }
+  if(e.key==="x"||e.key==="X"){ const g=Board.list().find(b=>b.kind==="ghost"); if(g) Board.remove(g.id); }
+});
+
+/* default "Claude Dublin" content piece — subtle, in the centre.
+   Uses the real image at claude-dublin.png (drop it in the project folder).
+   If it isn't there, the piece simply doesn't appear (no recreation). */
+function addBrandPiece(){
+  const bb=Board.ensure("brand","brand"); bb.brand=true; bb.sizeMul=0.82; bb.aspect=0.8;
+  Board.setName("brand","ANTHROPIC");           // tag reads P0_ANTHROPIC
+  Board.relayout();
+  const im=new Image();
+  im.onload=()=>Board.setImage("brand",im,"upload");
+  // if the file isn't there yet, keep the centred P0_ANTHROPIC area as a placeholder
+  im.onerror=()=>{};
+  im.src="Assets/claude.avif";
+}
+
+/* boot */
+resize();                 // board starts empty apart from the subtle brand piece
+buildQR();                // fixed QR area, always shown top-right
+addBrandPiece();
+// anonymous areas that mask the line/dot patterns, in varied sizes AND shapes
+// [fill, sizeMul, aspect]  (aspect < 1 = tall/vertical, > 1 = wide)
+const DECO=[
+  ["lines", 1.00, 1.5 ],  // wide, larger
+  ["dots",  0.45, 0.5 ],  // small, vertical
+  ["lines", 0.40, 0.42],  // small, tall strip
+  ["dots",  0.85, 1.0 ],  // medium square
+  ["plain", 0.38, 1.8 ],  // small, wide
+  ["lines", 0.55, 0.7 ],  // small portrait
+  ["dots",  0.6,  2.0 ],  // wide strip
+];
+for(let i=0;i<DECO.length;i++){ const b=Board.ensure("deco"+i,"deco"); b.deco=true;
+  b.fill=DECO[i][0]; b.sizeMul=DECO[i][1]; b.aspect=DECO[i][2]; }
+if(isHost){ document.getElementById("addBtn").style.display="none"; document.getElementById("flipBtn").style.display="none"; }
+Net.connect();
+requestAnimationFrame(draw);
+updateStatus();
+</script>
