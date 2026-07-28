@@ -55,7 +55,7 @@
     display:inline-flex; align-items:center; justify-content:center; transition:transform .1s ease; }
   #dock button:active{ transform:scale(.97); }
   #addBtn{ background:var(--black); color:var(--ivory); }
-  #dlBtn{ background:var(--ivory); color:var(--black); width:32px; height:32px; padding:0; }
+  #dock #dlBtn{ background:var(--ivory); color:var(--black); width:32px; height:32px; padding:0; flex:0 0 32px; }
   #dlBtn img{ display:block; width:16px; height:16px; }
 
   /* name-entry modal */
@@ -507,9 +507,14 @@ function buildQR(){
   const url=new URL(location.href); url.searchParams.delete("host");
   const qr=qrcode(0,"M"); qr.addData(url.toString()); qr.make();
   const n=qr.getModuleCount(), cvs=document.getElementById("qr"), c=cvs.getContext("2d");
-  const size=cvs.width, cell=Math.floor(size/(n+2)), off=Math.floor((size-cell*n)/2);
-  c.fillStyle="#6C6C6C"; c.fillRect(0,0,size,size); c.fillStyle=C.ivory;  // white modules on gray
-  for(let y=0;y<n;y++) for(let x=0;x<n;x++) if(qr.isDark(y,x)) c.fillRect(off+x*cell,off+y*cell,cell,cell);
+  const size=cvs.width, pad=10, quiet=3;
+  const cell=Math.floor((size-pad*2)/(n+quiet*2)), field=cell*(n+quiet*2);
+  const ox=Math.floor((size-field)/2);
+  c.fillStyle="#6C6C6C"; c.fillRect(0,0,size,size);          // gray box (as requested)
+  c.fillStyle=C.black;  c.fillRect(ox,ox,field,field);       // black QR field + quiet zone (for contrast)
+  c.fillStyle=C.ivory;                                        // white modules -> white-on-black scans reliably
+  const m0=ox+cell*quiet;
+  for(let y=0;y<n;y++) for(let x=0;x<n;x++) if(qr.isDark(y,x)) c.fillRect(m0+x*cell,m0+y*cell,cell,cell);
 }
 
 /* ============================================================================
