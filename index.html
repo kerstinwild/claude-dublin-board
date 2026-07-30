@@ -118,6 +118,7 @@
   <div class="row"><span>small</span><input type="range" id="sSmall" min="0" max="100" value="60" /></div>
   <div class="row"><span>overlap</span><input type="range" id="sOverlap" min="0" max="100" value="50" /></div>
   <div class="row"><span>cursor react</span><input type="checkbox" id="sCursor" checked /></div>
+  <div class="row"><span>sound</span><input type="checkbox" id="sSound" /></div>
   <div class="row"><span>background</span><input type="color" id="sBg" value="#141413" /></div>
   <div class="row"><span>details</span><input type="color" id="sTech" value="#DEDCD1" /></div>
 </div>
@@ -694,6 +695,49 @@ const Net = (()=>{
 })();
 
 /* ============================================================================
+   AUDIO — an ORIGINAL generative "data" soundscape (homage to the minimal
+   sine/click aesthetic; not a reproduction of any existing track). Pure high
+   sine blips, clicks and a sub pulse, sequenced sparsely and reacting to the
+   number of areas on the board. Off by default; toggled in Settings.
+   ========================================================================== */
+const Sound = (()=>{
+  let ac=null, master=null, noiseBuf=null, timer=null, step=0, on=false;
+  const NOTES=[1760,2093,2637,3136,4186,5274,6272,7040];   // high, bright sine set
+  function ensure(){
+    if(ac) return;
+    ac=new (window.AudioContext||window.webkitAudioContext)();
+    master=ac.createGain(); master.gain.value=0.13; master.connect(ac.destination);
+    const n=Math.floor(ac.sampleRate*0.2); noiseBuf=ac.createBuffer(1,n,ac.sampleRate);
+    const d=noiseBuf.getChannelData(0); for(let i=0;i<n;i++) d[i]=Math.random()*2-1;
+  }
+  function blip(freq,dur,gain){
+    const t=ac.currentTime, o=ac.createOscillator(), g=ac.createGain();
+    o.type="sine"; o.frequency.value=freq;
+    g.gain.setValueAtTime(0,t); g.gain.linearRampToValueAtTime(gain,t+0.002);
+    g.gain.exponentialRampToValueAtTime(0.0001,t+dur);
+    o.connect(g); g.connect(master); o.start(t); o.stop(t+dur+0.02);
+  }
+  function click(gain){
+    const t=ac.currentTime, s=ac.createBufferSource(), bp=ac.createBiquadFilter(), g=ac.createGain();
+    s.buffer=noiseBuf; bp.type="highpass"; bp.frequency.value=2600;
+    g.gain.setValueAtTime(gain,t); g.gain.exponentialRampToValueAtTime(0.0001,t+0.03);
+    s.connect(bp); bp.connect(g); g.connect(master); s.start(t); s.stop(t+0.05);
+  }
+  function tick(){
+    step++;
+    const n=Board.list().filter(b=>!b.deco && !b.brand).length;   // density from live areas
+    if(step%4===0) click(0.16);                                   // metronomic tick
+    if(Math.random() < 0.30 + Math.min(0.45, n*0.04)) blip(NOTES[(step*3)%NOTES.length], 0.03+Math.random()*0.06, 0.11);
+    if(step%8===0) blip(55, 0.18, 0.22);                          // sub pulse
+    if(step%32===0) blip(NOTES[NOTES.length-1], 1.1, 0.03);       // faint high drone
+    if(Math.random()<0.05) click(0.10);                          // stray transient
+  }
+  function start(){ ensure(); if(ac.resume) ac.resume(); on=true; if(!timer) timer=setInterval(tick,125); }
+  function stop(){ on=false; if(timer){ clearInterval(timer); timer=null; } }
+  return { toggle(v){ v?start():stop(); }, get on(){return on;} };
+})();
+
+/* ============================================================================
    wire up — join flow with name entry
    ========================================================================== */
 const modal=document.getElementById("modal"), nameInput=document.getElementById("nameInput");
@@ -780,6 +824,7 @@ bindRange("sLarge","large"); bindRange("sSmall","small"); bindRange("sOverlap","
 document.getElementById("sBg").addEventListener("input",e=>{ bgColor=e.target.value; document.body.style.background=bgColor; });
 document.getElementById("sTech").addEventListener("input",e=>{ techRGB=hexToRgb(e.target.value); });
 document.getElementById("sCursor").addEventListener("change",e=>{ SET.cursorRepel=e.target.checked; });
+document.getElementById("sSound").addEventListener("change",e=>{ Sound.toggle(e.target.checked); });
 
 // hide the bottom bar after 3s without cursor movement; reveal on any activity
 let idleT;
