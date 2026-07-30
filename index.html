@@ -451,6 +451,7 @@ function drawFrame(now){
 }
 
 const HANDLE = "#434342";
+const coordCache = new Map();   // frozen readout value per stable crossing id (no flicker)
 function drawChrome(now, bs, rects, guides){
   // (area edges come from the dashed guide grid itself — no extra brighter frame)
 
@@ -475,9 +476,10 @@ function drawChrome(now, bs, rects, guides){
     const x=Math.round(v.x), y=Math.round(h.y);
     if(overImage(x,y)) continue;               // never draw squares on top of images
     ctx.fillStyle=HANDLE; ctx.fillRect(x-s/2, y-s/2, s, s);
-    if(k<3){                                    // coordinate readout beside a few
+    if(k<3){                                    // coordinate readout beside a few (frozen value -> no flicker)
+      const ck=v.id+"|"+h.id; let txt=coordCache.get(ck); if(!txt){ txt=`${x}, ${y}`; coordCache.set(ck,txt); }
       ctx.fillStyle="rgba(250,249,245,0.45)"; ctx.font="600 10px ui-monospace,Menlo,monospace"; ctx.textBaseline="top";
-      ctx.fillText(`${x}, ${y}`, x+8, y+5);
+      ctx.fillText(txt, x+8, y+5);
     }
   }
 
