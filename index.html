@@ -63,6 +63,7 @@
   #settings .row > span{ flex:0 0 78px; }
   #settings input[type=range]{ flex:1; accent-color:var(--clay); height:14px; }
   #settings input[type=color]{ width:44px; height:22px; border:1px solid rgba(250,249,245,.25); background:none; padding:0; cursor:pointer; }
+  #settings input[type=checkbox]{ width:16px; height:16px; accent-color:var(--clay); cursor:pointer; }
 
   /* per-image tools (front / back / delete) at the selected area's top-right */
   #imgTools{ position:fixed; z-index:8; display:none; gap:2px; }
@@ -116,6 +117,7 @@
   <div class="row"><span>large</span><input type="range" id="sLarge" min="0" max="100" value="60" /></div>
   <div class="row"><span>small</span><input type="range" id="sSmall" min="0" max="100" value="60" /></div>
   <div class="row"><span>overlap</span><input type="range" id="sOverlap" min="0" max="100" value="50" /></div>
+  <div class="row"><span>cursor react</span><input type="checkbox" id="sCursor" checked /></div>
   <div class="row"><span>background</span><input type="color" id="sBg" value="#141413" /></div>
   <div class="row"><span>details</span><input type="color" id="sTech" value="#DEDCD1" /></div>
 </div>
@@ -178,7 +180,8 @@ function hashStr(s){ let h=2166136261>>>0; for(let i=0;i<s.length;i++){ h^=s.cha
 
 /* ---- live settings (adjustable via the Settings panel) ---- */
 let bgColor="#141413", techRGB=[222,220,209];
-const SET={ large:0.6, small:0.6, overlap:0.5 };   // 0..1 amounts; overlap = how much areas overlap
+const SET={ large:0.6, small:0.6, overlap:0.5, cursorRepel:true };   // overlap = how much areas overlap
+let cursorX=-99999, cursorY=-99999;   // pointer position for the optional cursor-repel
 function hexToRgb(h){ h=(h||"").replace("#",""); if(h.length===3) h=h.split("").map(c=>c+c).join(""); const n=parseInt(h||"0",16)||0; return [(n>>16)&255,(n>>8)&255,n&255]; }
 function techRGBA(a){ return `rgba(${techRGB[0]},${techRGB[1]},${techRGB[2]},${a})`; }
 // per-media height multiplier: uniform when both sliders low; some grow, some shrink as they rise
@@ -339,6 +342,15 @@ const Board = (()=>{
         dx/=d; dy/=d;
         const f = pen*K_PUSH*(1-SET.overlap);   // weaker push -> areas allowed to overlap more
         a.fx-=dx*f; a.fy-=dy*f; b.fx+=dx*f; b.fy+=dy*f;
+      }
+    }
+    // optional cursor repel: areas gently shift away when the pointer is near
+    if(SET.cursorRepel && cursorX>-9000){
+      for(const b of bs){
+        if(b.dragging) continue;
+        const dx=b.cx-cursorX, dy=b.cy-cursorY, d=Math.hypot(dx,dy);
+        const R=Math.max(b.wCur,b.hCur)*0.6 + 140;
+        if(d<R && d>0.1){ const f=(1-d/R)*0.30; b.fx+=dx/d*f; b.fy+=dy/d*f; }
       }
     }
     // integrate + breathe + clamp to field
@@ -767,12 +779,18 @@ function bindRange(id,key){ const el=document.getElementById(id); el.addEventLis
 bindRange("sLarge","large"); bindRange("sSmall","small"); bindRange("sOverlap","overlap");
 document.getElementById("sBg").addEventListener("input",e=>{ bgColor=e.target.value; document.body.style.background=bgColor; });
 document.getElementById("sTech").addEventListener("input",e=>{ techRGB=hexToRgb(e.target.value); });
+document.getElementById("sCursor").addEventListener("change",e=>{ SET.cursorRepel=e.target.checked; });
 
 // hide the bottom bar after 3s without cursor movement; reveal on any activity
 let idleT;
 function activity(){ document.body.classList.remove("idle"); clearTimeout(idleT); idleT=setTimeout(()=>document.body.classList.add("idle"), 3000); }
 ["mousemove","mousedown","touchstart","keydown","wheel"].forEach(ev=>window.addEventListener(ev, activity, {passive:true}));
 activity();
+
+// track the pointer for the optional cursor-repel
+window.addEventListener("pointermove", e=>{ cursorX=e.clientX; cursorY=e.clientY; }, {passive:true});
+window.addEventListener("pointerout", e=>{ if(!e.relatedTarget){ cursorX=cursorY=-99999; } }, {passive:true});
+window.addEventListener("blur", ()=>{ cursorX=cursorY=-99999; });
 
 // download the current board as a PNG
 document.getElementById("dlBtn").addEventListener("click", ()=>{
