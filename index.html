@@ -558,8 +558,8 @@ function drawChrome(now, bs, rects, guides){
     ctx.fillStyle=HANDLE; ctx.fillRect(x-s/2, y-s/2, s, s);
     if(k<3){                                    // coordinate readout beside a few (frozen value -> no flicker)
       const ck=v.id+"|"+h.id; let txt=coordCache.get(ck); if(!txt){ txt=`${x}, ${y}`; coordCache.set(ck,txt); }
-      ctx.fillStyle=techRGBA(0.5); ctx.font="600 10px ui-monospace,Menlo,monospace"; ctx.textBaseline="top";
-      ctx.fillText(txt, x+8, y+5);
+      ctx.fillStyle=techRGBA(0.5); ctx.font="600 7px ui-monospace,Menlo,monospace"; ctx.textBaseline="top";  // 30% smaller
+      ctx.fillText(txt, x+7, y+4);
     }
   }
 
@@ -576,8 +576,8 @@ function drawChrome(now, bs, rects, guides){
 
 // Frosted tag anchored INSIDE the block's top-left corner (blurs what's behind it).
 function drawTag(b, R){
-  ctx.font="600 11px ui-monospace,Menlo,monospace";
-  const text=b.name, padX=8, h=18, tw=ctx.measureText(text).width;
+  ctx.font="600 8px ui-monospace,Menlo,monospace";   // 30% smaller
+  const text=b.name, padX=6, h=14, tw=ctx.measureText(text).width;
   const w = padX*2 + tw;
   if(R.w < w+8 || R.h < h+8) return; // block too small for a tag
   const m=6, px=Math.round(R.x+m), py=Math.round(R.y+m);
