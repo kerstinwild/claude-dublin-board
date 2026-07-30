@@ -51,6 +51,12 @@
          left:50%; bottom:0; transform:translateX(-50%);
          background:#7C7C7A; padding:8px; transition:opacity .4s ease; }
   body.idle #dock{ opacity:0; pointer-events:none; }   /* fade out after 3s of no cursor movement */
+
+  /* delete-media button, shown at the selected media area's top-right corner */
+  #delBtn{ position:fixed; z-index:8; display:none; width:28px; height:28px; padding:0; border:none;
+           cursor:pointer; background:var(--black); color:var(--ivory);
+           font:700 13px/1 ui-monospace,Menlo,monospace; align-items:center; justify-content:center; }
+  #delBtn.on{ display:inline-flex; }
   #dock button{ height:32px; padding:0 20px; border-radius:0; border:none; cursor:pointer;
     font:700 10px/1 ui-monospace,Menlo,monospace; letter-spacing:.16em; text-transform:uppercase;
     display:inline-flex; align-items:center; justify-content:center; transition:transform .1s ease; }
@@ -82,6 +88,8 @@
   <div id="qrWrap"><canvas id="qr" width="200" height="200"></canvas></div>
 </div>
 
+<button id="delBtn" title="delete media">✕</button>
+
 <div id="dock">
   <button id="addBtn">add photo</button>
   <button id="dlBtn" title="download board"><img src="Assets/Icon-Download.svg" alt="download" /></button>
@@ -98,7 +106,7 @@
     </div>
   </div>
 </div>
-<input id="fileInput" type="file" accept="image/*,video/*" style="display:none" />
+<input id="fileInput" type="file" accept="image/*,video/*" multiple style="display:none" />
 
 <script type="module">
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
@@ -439,6 +447,7 @@ function drawFrame(now){
   drawGuides(guides, "front");
 
   drawChrome(now, bs, rects, guides);
+  updateSelection();
 }
 
 const HANDLE = "#434342";
@@ -474,6 +483,13 @@ function drawChrome(now, bs, rects, guides){
 
   // ---- name tags (P0_NAME), inside the area top-left, frosted (not on empty areas) ----
   for(let i=0;i<bs.length;i++) if(!bs[i].deco) drawTag(bs[i], rects[i]);
+
+  // ---- selection outline on the clicked media area ----
+  if(typeof selectedId!=="undefined" && selectedId){
+    const si=bs.findIndex(b=>b.id===selectedId);
+    if(si>=0){ const R=rects[si]; ctx.strokeStyle=C.ivory; ctx.lineWidth=2;
+      ctx.strokeRect(Math.round(R.x)+0.5,Math.round(R.y)+0.5,Math.round(R.w),Math.round(R.h)); }
+  }
 }
 
 // Frosted tag anchored INSIDE the block's top-left corner (blurs what's behind it).
@@ -569,6 +585,7 @@ const Net = (()=>{
       Board.ensure(id,"remote"); Board.setOwner(id, owner||id); if(name) Board.setName(id,name);
       const img=new Image(); img.onload=()=>Board.setImage(id,img,facing); img.src=jpeg;
     });
+    channel.on("broadcast",{event:"drop"},({payload})=>{ if(payload&&payload.id) Board.remove(payload.id); });
     channel.subscribe(async(status)=>{
       if(status==="SUBSCRIBED"){ online=true; updateStatus(); if(joined) await channel.track({id:myId,name:myName}); bcastAll(); }
     });
@@ -589,7 +606,9 @@ const Net = (()=>{
     mine.set(myId,{jpeg,facing,name}); bcastOne(myId); }
   // upload: register a NEW owned block (its own id) — adds, never replaces
   function addStill(id,jpeg,facing,name){ mine.set(id,{jpeg,facing,name}); bcastOne(id); }
-  return { myId, connect, join, setStill, addStill, get online(){return online;} };
+  // delete: stop broadcasting this block and tell peers to remove it
+  function drop(id){ mine.delete(id); if(online&&channel) channel.send({type:"broadcast",event:"drop",payload:{id}}); }
+  return { myId, connect, join, setStill, addStill, drop, get online(){return online;} };
 })();
 
 /* ============================================================================
@@ -643,10 +662,9 @@ function startVideoBroadcast(id, v, nm){
   const tick=()=>{ const d=videoFrameToStill(v); if(d) Net.addStill(id, d, "upload", nm); };
   setTimeout(tick, 900); setInterval(tick, 2000);   // periodic frames so remote peers see it
 }
-fileInput.addEventListener("change", async ()=>{
-  const f=fileInput.files&&fileInput.files[0]; fileInput.value=""; if(!f) return;
-  modal.classList.remove("on");
-  const id = Net.myId + "_u" + (++uploadN), nm = pendingName;   // a fresh block per upload
+// each selected file becomes its own new area (a fresh block)
+function addMediaFile(f, nm){
+  const id = Net.myId + "_u" + (++uploadN);
   Board.ensure(id,"me"); Board.setOwner(id, Net.myId); Board.setName(id, nm);
   if(f.type.startsWith("video/")){
     const v=document.createElement("video");
@@ -655,10 +673,17 @@ fileInput.addEventListener("change", async ()=>{
     v.addEventListener("loadeddata", ()=>{ v.play().catch(()=>{}); Board.setImage(id, v, "upload"); });
     startVideoBroadcast(id, v, nm);
   }else{
-    const dataUrl=await fileToStill(f);
-    const img=new Image(); img.onload=()=>Board.setImage(id,img,"upload"); img.src=dataUrl;
-    Net.addStill(id, dataUrl, "upload", nm);
+    fileToStill(f).then(dataUrl=>{
+      const img=new Image(); img.onload=()=>Board.setImage(id,img,"upload"); img.src=dataUrl;
+      Net.addStill(id, dataUrl, "upload", nm);
+    });
   }
+}
+fileInput.addEventListener("change", ()=>{
+  const files=fileInput.files ? Array.from(fileInput.files) : []; fileInput.value=""; if(!files.length) return;
+  modal.classList.remove("on");
+  const nm=pendingName;
+  files.forEach(f=> addMediaFile(f, nm));   // supports selecting multiple at once
 });
 
 document.getElementById("goBtn").addEventListener("click", startCamera);
@@ -676,6 +701,27 @@ document.getElementById("dlBtn").addEventListener("click", ()=>{
   const a=document.createElement("a");
   a.download="claude-dubin_kerstinharrer.png"; a.href=cv.toDataURL("image/png"); a.click();
 });
+
+// ---- select a media area (click) -> X to delete -> click away to deselect ----
+const delBtn=document.getElementById("delBtn");
+let selectedId=null;
+function selectableAt(x,y){
+  const bs=Board.list();
+  for(let i=bs.length-1;i>=0;i--){ const b=bs[i]; if(!b.img||b.brand) continue;   // only uploaded media
+    const R=Board.rectOf(b); if(x>=R.x&&x<=R.r&&y>=R.y&&y<=R.bt) return b.id; }
+  return null;
+}
+cv.addEventListener("click",(e)=>{ selectedId=selectableAt(e.clientX,e.clientY); if(!selectedId) delBtn.classList.remove("on"); });
+delBtn.addEventListener("click",(e)=>{ e.stopPropagation();
+  if(selectedId){ Board.remove(selectedId); Net.drop(selectedId); }
+  selectedId=null; delBtn.classList.remove("on");
+});
+function updateSelection(){
+  const R = selectedId ? Board.rectOfId(selectedId) : null;
+  if(!R){ selectedId=null; delBtn.classList.remove("on"); return; }
+  delBtn.style.left=Math.round(R.r-28)+"px"; delBtn.style.top=Math.round(R.y)+"px";
+  delBtn.classList.add("on");
+}
 
 // demo helpers: A adds a placeholder block, X removes one
 window.addEventListener("keydown",(e)=>{
