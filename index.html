@@ -331,15 +331,16 @@ const Board = (()=>{
     }
     // integrate + breathe + clamp to field
     for(const b of bs){
-      b.vx=(b.vx + b.fx*dt)*DAMP; b.vy=(b.vy + b.fy*dt)*DAMP;
-      b.cx += b.vx*dt; b.cy += b.vy*dt;
       const s = 1 + BREATH_AMP*Math.sin(now*BREATH_SPD + b.phase);
       b.wCur = ease(b.wCur, b.w*s, 0.10);
       b.hCur = ease(b.hCur, b.h*s, 0.10);
+      b.imgAlpha = ease(b.imgAlpha, b.img?1:0, 0.05);
+      if(b.dragging){ b.vx=0; b.vy=0; continue; }   // pinned to the cursor while dragging
+      b.vx=(b.vx + b.fx*dt)*DAMP; b.vy=(b.vy + b.fy*dt)*DAMP;
+      b.cx += b.vx*dt; b.cy += b.vy*dt;
       const hw=b.wCur/2, hh=b.hCur/2, m=4;
       b.cx = clamp(b.cx, hw+m, W-hw-m);
       b.cy = clamp(b.cy, hh+m, H-hh-m);
-      b.imgAlpha = ease(b.imgAlpha, b.img?1:0, 0.05);
     }
   }
 
@@ -448,27 +449,28 @@ function drawFrame(now){
   // ---- dashed guide grid (behind the areas) ----
   drawGuides(guides, "back");
 
-  // ---- Each AREA is one of: line-pattern, dot-pattern, plain, or image.
-  //      Line/dot areas mask a continuous full-screen pattern into view. ----
-  const lineRects=[], dotRects=[];
+  // ---- Sort areas by type. Patterns are drawn FIRST so they always sit BEHIND
+  //      images (image over pattern = image wins, no colour fill). ----
+  const lineRects=[], dotRects=[], imgIdx=[];
   for(let i=0;i<bs.length;i++){
     const b=bs[i], R=rects[i];
     if(R.w<2||R.h<2) continue;
-    if(b.img && b.imgAlpha>0.01){
-      ctx.fillStyle=bgColor; ctx.fillRect(R.x,R.y,R.w,R.h);
-      ctx.save(); ctx.globalAlpha=b.imgAlpha;
-      drawCover(b.img, R.x,R.y,R.w,R.h, b.facing==="user");
-      ctx.restore();
-    }else if(b.fill==="lines"){ lineRects.push(R); }
-    else if(b.fill==="dots"){ dotRects.push(R); }
+    if(b.img && b.imgAlpha>0.01) imgIdx.push(i);
+    else if(b.fill==="lines") lineRects.push(R);
+    else if(b.fill==="dots") dotRects.push(R);
     // else: plain area (no fill)
   }
   if(lineRects.length){ ctx.save(); ctx.beginPath(); for(const R of lineRects) ctx.rect(R.x,R.y,R.w,R.h); ctx.clip(); drawLinePattern(); ctx.restore(); }
   if(dotRects.length){ ctx.save(); ctx.beginPath(); for(const R of dotRects) ctx.rect(R.x,R.y,R.w,R.h); ctx.clip(); drawDotPattern(); ctx.restore(); }
+  // images on top, each with an opaque plate so it fully masks the pattern/grid behind
+  for(const i of imgIdx){ const b=bs[i], R=rects[i];
+    ctx.fillStyle=bgColor; ctx.fillRect(R.x,R.y,R.w,R.h);
+    ctx.save(); ctx.globalAlpha=b.imgAlpha; drawCover(b.img,R.x,R.y,R.w,R.h,b.facing==="user"); ctx.restore();
+  }
 
-  // ---- overlaps: where two photo blocks cross, print the palette over both ----
-  for(let i=0;i<bs.length;i++) for(let j=i+1;j<bs.length;j++){
-    if(!(bs[i].img || bs[j].img)) continue;   // no colour fields until there's content
+  // ---- overlaps: ONLY where an image crosses another image ----
+  for(let a=0;a<imgIdx.length;a++) for(let bIdx=a+1;bIdx<imgIdx.length;bIdx++){
+    const i=imgIdx[a], j=imgIdx[bIdx];
     const o=intersect(rects[i],rects[j]); if(!o) continue;
     const ha=hashStr(bs[i].id), hb=hashStr(bs[j].id);
     if(((ha^hb)>>>0)%2===0){ // plain palette colour
@@ -760,7 +762,35 @@ function selectableAt(x,y){
     const R=Board.rectOf(b); if(x>=R.x&&x<=R.r&&y>=R.y&&y<=R.bt) return b.id; }
   return null;
 }
-cv.addEventListener("click",(e)=>{ selectedId=selectableAt(e.clientX,e.clientY); if(!selectedId) delBtn.classList.remove("on"); });
+// ---- drag any image area to move it (pointer = mouse + touch) ----
+let dragId=null, dragOX=0, dragOY=0, dragMoved=false, suppressClick=false;
+function imageAt(x,y){
+  const list=Board.list();
+  for(let i=list.length-1;i>=0;i--){ const b=list[i]; if(!b.img) continue;
+    const R=Board.rectOf(b); if(x>=R.x&&x<=R.r&&y>=R.y&&y<=R.bt) return b; }
+  return null;
+}
+cv.addEventListener("pointerdown",(e)=>{
+  const b=imageAt(e.clientX,e.clientY); if(!b) return;
+  dragId=b.id; b.dragging=true; dragOX=b.cx-e.clientX; dragOY=b.cy-e.clientY; dragMoved=false;
+  document.body.style.cursor="grabbing"; try{ cv.setPointerCapture(e.pointerId); }catch(_){}
+});
+window.addEventListener("pointermove",(e)=>{
+  if(!dragId) return; const b=Board.get(dragId); if(!b){ dragId=null; return; }
+  const nx=e.clientX+dragOX, ny=e.clientY+dragOY;
+  if(Math.abs(nx-b.cx)>2||Math.abs(ny-b.cy)>2) dragMoved=true;
+  const hw=b.wCur/2, hh=b.hCur/2;
+  b.cx=clamp(nx,hw,W-hw); b.cy=clamp(ny,hh,H-hh); b.vx=0; b.vy=0;
+});
+window.addEventListener("pointerup",()=>{
+  if(!dragId) return; const b=Board.get(dragId);
+  if(b){ b.home={x:b.cx,y:b.cy}; b.dragging=false; }   // drop it here (stays put)
+  document.body.style.cursor=""; suppressClick=dragMoved; dragId=null;
+});
+cv.addEventListener("click",(e)=>{
+  if(suppressClick){ suppressClick=false; return; }    // the click that ends a drag: ignore
+  selectedId=selectableAt(e.clientX,e.clientY); if(!selectedId) delBtn.classList.remove("on");
+});
 delBtn.addEventListener("click",(e)=>{ e.stopPropagation();
   if(selectedId){ Board.remove(selectedId); Net.drop(selectedId); }
   selectedId=null; delBtn.classList.remove("on");
