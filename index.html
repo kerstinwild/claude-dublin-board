@@ -41,7 +41,7 @@
   #status{ position:fixed; top:calc(env(safe-area-inset-top) + 14px); left:14px; z-index:5; pointer-events:none; }
 
   /* fixed QR area, flush to the top-right window corner: #6C6C6C box, white QR */
-  #host{ position:fixed; top:0; right:0; z-index:6; }
+  #host{ position:fixed; top:0; right:0; z-index:6; display:none; }
   #qrWrap{ background:#6C6C6C; padding:12px; }
   #qr{ display:block; image-rendering:pixelated;
        width:clamp(80px, 12vmin, 120px); height:clamp(80px, 12vmin, 120px); }
@@ -49,7 +49,8 @@
   /* sticky bottom bar flush to the window bottom: gray frame, sharp corners */
   #dock{ position:fixed; z-index:7; display:flex; align-items:stretch; gap:6px;
          left:50%; bottom:0; transform:translateX(-50%);
-         background:#7C7C7A; padding:8px; }
+         background:#7C7C7A; padding:8px; transition:opacity .4s ease; }
+  body.idle #dock{ opacity:0; pointer-events:none; }   /* fade out after 3s of no cursor movement */
   #dock button{ height:32px; padding:0 20px; border-radius:0; border:none; cursor:pointer;
     font:700 10px/1 ui-monospace,Menlo,monospace; letter-spacing:.16em; text-transform:uppercase;
     display:inline-flex; align-items:center; justify-content:center; transition:transform .1s ease; }
@@ -93,11 +94,11 @@
     <div class="nameRow"><span class="prefix">P0_</span><input id="nameInput" maxlength="12" placeholder="NAME" autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false" data-1p-ignore data-lpignore="true" /></div>
     <div class="modalBtns">
       <button id="goBtn">enter · start camera</button>
-      <button id="uploadBtn" class="ghost">or upload a photo</button>
+      <button id="uploadBtn" class="ghost">or upload photo / video</button>
     </div>
   </div>
 </div>
-<input id="fileInput" type="file" accept="image/*" style="display:none" />
+<input id="fileInput" type="file" accept="image/*,video/*" style="display:none" />
 
 <script type="module">
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
@@ -200,8 +201,9 @@ const Board = (()=>{
   function setImage(id, img, facing){
     const b=blocks.get(id); if(!b) return;
     b.img=img; if(facing) b.facing=facing;
-    // adopt the image's real aspect ratio (once) so the area matches, no crop
-    const a=(img.width&&img.height)?img.width/img.height:null;
+    // adopt the image/video's real aspect ratio (once) so the area matches, no crop
+    const iw=img.videoWidth||img.width, ih=img.videoHeight||img.height;
+    const a=(iw&&ih)?iw/ih:null;
     if(a && Math.abs((b.aspect||1)-a)>0.03){ b.aspect=a; relayout(); }
   }
   function setName(id, name){ const b=blocks.get(id); if(b && name) b.name="P0_"+name; }
@@ -394,7 +396,7 @@ function drawFrame(now){
   const guides = { vert:[...base.vert, ...edges.vert], horz:[...base.horz, ...edges.horz] };
   // dashed guides along the QR box's left and bottom edges
   const qrEl=document.getElementById("qrWrap");
-  if(qrEl){ const r=qrEl.getBoundingClientRect(); guides.vert.push({x:r.left,id:"qrL",front:false}); guides.horz.push({y:r.bottom,id:"qrB",front:false}); }
+  if(qrEl && qrEl.offsetParent!==null){ const r=qrEl.getBoundingClientRect(); guides.vert.push({x:r.left,id:"qrL",front:false}); guides.horz.push({y:r.bottom,id:"qrB",front:false}); }
 
   // ---- dashed guide grid (behind the areas) ----
   drawGuides(guides, "back");
@@ -629,19 +631,45 @@ function fileToStill(file){
   });
 }
 async function startUpload(){ pendingName=currentName(); await Net.join(pendingName); liveUI(); fileInput.click(); }
+// grab a downscaled still from a playing video (for the multiplayer broadcast)
+function videoFrameToStill(v, maxD=320){
+  const w0=v.videoWidth, h0=v.videoHeight; if(!w0||!h0) return null;
+  const sc=Math.min(1, maxD/Math.max(w0,h0)); const w=Math.max(1,Math.round(w0*sc)), h=Math.max(1,Math.round(h0*sc));
+  const cap=document.createElement("canvas"); cap.width=w; cap.height=h;
+  cap.getContext("2d").drawImage(v,0,0,w,h);
+  return cap.toDataURL("image/jpeg",0.55);
+}
+function startVideoBroadcast(id, v, nm){
+  const tick=()=>{ const d=videoFrameToStill(v); if(d) Net.addStill(id, d, "upload", nm); };
+  setTimeout(tick, 900); setInterval(tick, 2000);   // periodic frames so remote peers see it
+}
 fileInput.addEventListener("change", async ()=>{
   const f=fileInput.files&&fileInput.files[0]; fileInput.value=""; if(!f) return;
   modal.classList.remove("on");
-  const id = Net.myId + "_u" + (++uploadN);          // a fresh block per upload
-  Board.ensure(id,"me"); Board.setOwner(id, Net.myId); Board.setName(id, pendingName);
-  const dataUrl=await fileToStill(f);
-  const img=new Image(); img.onload=()=>Board.setImage(id,img,"upload"); img.src=dataUrl;
-  Net.addStill(id, dataUrl, "upload", pendingName);
+  const id = Net.myId + "_u" + (++uploadN), nm = pendingName;   // a fresh block per upload
+  Board.ensure(id,"me"); Board.setOwner(id, Net.myId); Board.setName(id, nm);
+  if(f.type.startsWith("video/")){
+    const v=document.createElement("video");
+    v.muted=true; v.loop=true; v.autoplay=true; v.playsInline=true; v.setAttribute("playsinline","");
+    v.src=URL.createObjectURL(f);
+    v.addEventListener("loadeddata", ()=>{ v.play().catch(()=>{}); Board.setImage(id, v, "upload"); });
+    startVideoBroadcast(id, v, nm);
+  }else{
+    const dataUrl=await fileToStill(f);
+    const img=new Image(); img.onload=()=>Board.setImage(id,img,"upload"); img.src=dataUrl;
+    Net.addStill(id, dataUrl, "upload", nm);
+  }
 });
 
 document.getElementById("goBtn").addEventListener("click", startCamera);
 document.getElementById("uploadBtn").addEventListener("click", startUpload);
 nameInput.addEventListener("keydown", e=>{ if(e.key==="Enter") startCamera(); });
+
+// hide the bottom bar after 3s without cursor movement; reveal on any activity
+let idleT;
+function activity(){ document.body.classList.remove("idle"); clearTimeout(idleT); idleT=setTimeout(()=>document.body.classList.add("idle"), 3000); }
+["mousemove","mousedown","touchstart","keydown","wheel"].forEach(ev=>window.addEventListener(ev, activity, {passive:true}));
+activity();
 
 // download the current board as a PNG
 document.getElementById("dlBtn").addEventListener("click", ()=>{

@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"/>
+<title>Angry Birds — v2</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { height:100%; background:#111; overflow:hidden; font-family:'Trebuchet MS',Verdana,sans-serif; }
+  #wrap { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; }
+  canvas { display:block; background:#7ec0ee; box-shadow:0 0 40px rgba(0,0,0,.5); touch-action:none; }
+  #hud { position:fixed; top:0; left:0; width:100%; pointer-events:none; }
+  .badge { position:fixed; pointer-events:none; font-weight:bold; color:#fff; text-shadow:2px 2px 0 rgba(0,0,0,.35); }
+  #ver { top:8px; left:12px; font-size:14px; opacity:.85; }
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="c"></canvas></div>
+<div class="badge" id="ver">Angry Birds · v2</div>
+<script src="matter.min.js"></script>
+<script src="game.js"></script>
+</body>
+</html>
